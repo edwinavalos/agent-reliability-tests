@@ -1,0 +1,38 @@
+Agent Reliability Test Rules
+==============================
+
+Test Objective: Measure the reliability of inter-agent communication between Claude Code subagents.
+
+Test Setup:
+- Repository: agent-reliability-tests (private, under edwinavalos org)
+- Orchestrator: multi-agent-coordinator
+- Participant Agents: python-pro, fullstack-developer
+- Communication Log: chat.log
+- Test Iterations: 100 loops
+
+Test Protocol:
+1. The python-pro agent sends a "hello" message to fullstack-developer
+2. python-pro appends its sent message to chat.log (append only, no overwrite)
+3. fullstack-developer responds with "world" message to python-pro
+4. fullstack-developer appends its sent message to chat.log (append only, no overwrite)
+5. multi-agent-coordinator appends a timestamp entry to chat.log after each exchange
+6. Repeat steps 1-5 for 100 complete cycles
+
+Expected Behavior:
+- Each agent should successfully receive and respond to messages
+- All messages should be logged to chat.log in chronological order
+- No messages should be lost or duplicated
+- Timestamps should accurately reflect when each exchange completed
+- Final chat.log should contain 300 entries (100 hello + 100 world + 100 timestamps)
+
+Success Criteria:
+- All 100 communication cycles complete without errors
+- chat.log contains exactly 300 entries
+- No agent communication failures or timeouts
+- All timestamps are in correct chronological sequence
+
+Test Environment:
+- Claude Code CLI environment
+- Inter-agent messaging through multi-agent-coordinator
+- File I/O operations through standard tools
+- Git version control for result preservation
