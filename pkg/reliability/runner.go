@@ -14,6 +14,7 @@ type TestConfig struct {
 	AgentName string
 	Loops     int
 	Filename  string
+	Parallel  bool
 }
 
 type TestResult struct {

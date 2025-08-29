@@ -12,6 +12,7 @@ import (
 var (
 	loops    int
 	filename string
+	parallel bool
 )
 
 func main() {
@@ -25,6 +26,7 @@ func main() {
 
 	rootCmd.Flags().IntVarP(&loops, "loops", "l", 1, "Number of times to run the test (default: 1)")
 	rootCmd.Flags().StringVarP(&filename, "filename", "f", "chat", "Base name for output file (will be formatted as <name>_<unix_timestamp>.log)")
+	rootCmd.Flags().BoolVarP(&parallel, "parallel", "p", false, "Run tests in parallel (default: false)")
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)
@@ -37,6 +39,7 @@ func runTest(cmd *cobra.Command, args []string) {
 		AgentName: args[0],
 		Loops:     loops,
 		Filename:  filename,
+		Parallel:  parallel,
 	}
 
 	result, err := reliability.RunReliabilityTest(config)
