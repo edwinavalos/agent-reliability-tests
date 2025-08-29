@@ -16,6 +16,7 @@ type TestConfig struct {
 	Loops     int
 	Filename  string
 	Parallel  bool
+	BatchSize int
 }
 
 type TestResult struct {
@@ -71,24 +72,50 @@ func runSequentialLoops(config TestConfig, outputFile string, startTime time.Tim
 	}, nil
 }
 
-// runParallelLoops executes all loops concurrently
+// runParallelLoops executes loops in batches to control concurrency
 func runParallelLoops(config TestConfig, outputFile string, startTime time.Time) (*TestResult, error) {
-	var wg sync.WaitGroup
-	errorChan := make(chan error, config.Loops)
-
-	fmt.Printf("\n=== Starting %d parallel loops ===\n", config.Loops)
-
-	for i := 1; i <= config.Loops; i++ {
-		wg.Add(1)
-		go func(loopNum int) {
-			defer wg.Done()
-			if err := executeSingleLoop(loopNum, config, outputFile); err != nil {
-				errorChan <- fmt.Errorf("loop %d: %v", loopNum, err)
-			}
-		}(i)
+	batchSize := config.BatchSize
+	if batchSize <= 0 {
+		batchSize = 5 // Default batch size
 	}
 
-	wg.Wait()
+	totalLoops := config.Loops
+	fmt.Printf("\n=== Starting %d loops in batches of %d ===\n", totalLoops, batchSize)
+
+	errorChan := make(chan error, totalLoops)
+	loopIndex := 1
+
+	for loopIndex <= totalLoops {
+		// Determine the size of the current batch
+		currentBatchSize := batchSize
+		if loopIndex+batchSize-1 > totalLoops {
+			currentBatchSize = totalLoops - loopIndex + 1
+		}
+
+		fmt.Printf("\n--- Starting batch: loops %d-%d ---\n", loopIndex, loopIndex+currentBatchSize-1)
+
+		var wg sync.WaitGroup
+
+		// Start the current batch
+		for i := 0; i < currentBatchSize; i++ {
+			currentLoop := loopIndex + i
+			wg.Add(1)
+			go func(loopNum int) {
+				defer wg.Done()
+				if err := executeSingleLoop(loopNum, config, outputFile); err != nil {
+					errorChan <- fmt.Errorf("loop %d: %v", loopNum, err)
+				}
+			}(currentLoop)
+		}
+
+		// Wait for current batch to complete
+		wg.Wait()
+		fmt.Printf("--- Batch completed: loops %d-%d ---\n", loopIndex, loopIndex+currentBatchSize-1)
+
+		// Move to next batch
+		loopIndex += currentBatchSize
+	}
+
 	close(errorChan)
 
 	// Collect any errors
@@ -97,7 +124,7 @@ func runParallelLoops(config TestConfig, outputFile string, startTime time.Time)
 	}
 
 	totalDuration := time.Since(startTime)
-	fmt.Printf("\n=== All %d parallel loops completed ===\n", config.Loops)
+	fmt.Printf("\n=== All %d loops completed in batches ===\n", totalLoops)
 
 	return &TestResult{
 		OutputFile: outputFile,

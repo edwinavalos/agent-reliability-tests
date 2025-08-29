@@ -21,6 +21,10 @@ test-parallel:
 	@echo "Running reliability test..."
 	go run cmd/reliability/main.go general-purpose --loops 5 --parallel
 
+exec:
+	@echo "Running exec reliability test..."
+	go run cmd/reliability/main.go general-purpose --loops 30 --parallel
+
 # Analyze most recent log file  
 analyze:
 	@echo "Finding most recent log file..."

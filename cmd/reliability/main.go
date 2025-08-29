@@ -10,9 +10,10 @@ import (
 )
 
 var (
-	loops    int
-	filename string
-	parallel bool
+	loops     int
+	filename  string
+	parallel  bool
+	batchSize int
 )
 
 func main() {
@@ -27,6 +28,7 @@ func main() {
 	rootCmd.Flags().IntVarP(&loops, "loops", "l", 1, "Number of times to run the test (default: 1)")
 	rootCmd.Flags().StringVarP(&filename, "filename", "f", "chat", "Base name for output file (will be formatted as <name>_<unix_timestamp>.log)")
 	rootCmd.Flags().BoolVarP(&parallel, "parallel", "p", false, "Run tests in parallel (default: false)")
+	rootCmd.Flags().IntVar(&batchSize, "batch", 5, "Number of parallel executions to run at once (default: 5, only used with --parallel)")
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)
@@ -40,6 +42,7 @@ func runTest(cmd *cobra.Command, args []string) {
 		Loops:     loops,
 		Filename:  filename,
 		Parallel:  parallel,
+		BatchSize: batchSize,
 	}
 
 	result, err := reliability.RunReliabilityTest(config)
