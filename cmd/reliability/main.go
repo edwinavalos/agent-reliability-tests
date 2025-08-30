@@ -14,6 +14,7 @@ var (
 	filename  string
 	parallel  bool
 	batchSize int
+	queue     int
 )
 
 func main() {
@@ -29,6 +30,10 @@ func main() {
 	rootCmd.Flags().StringVarP(&filename, "filename", "f", "chat", "Base name for output file (will be formatted as <name>_<unix_timestamp>.log)")
 	rootCmd.Flags().BoolVarP(&parallel, "parallel", "p", false, "Run tests in parallel (default: false)")
 	rootCmd.Flags().IntVar(&batchSize, "batch", 5, "Number of parallel executions to run at once (default: 5, only used with --parallel)")
+	rootCmd.Flags().IntVarP(&queue, "queue", "q", 0, "Run tests with N worker queue (mutually exclusive with --parallel)")
+
+	// Make --parallel and --queue mutually exclusive
+	rootCmd.MarkFlagsMutuallyExclusive("parallel", "queue")
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)
@@ -43,6 +48,7 @@ func runTest(cmd *cobra.Command, args []string) {
 		Filename:  filename,
 		Parallel:  parallel,
 		BatchSize: batchSize,
+		Queue:     queue,
 	}
 
 	result, err := reliability.RunReliabilityTest(config)

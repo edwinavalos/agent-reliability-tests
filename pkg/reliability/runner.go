@@ -11,17 +11,36 @@ import (
 	"time"
 )
 
+type ExecutionMode int
+
+const (
+	Sequential ExecutionMode = iota
+	Parallel
+	Queue
+)
+
 type TestConfig struct {
 	AgentName string
 	Loops     int
 	Filename  string
 	Parallel  bool
 	BatchSize int
+	Queue     int
 }
 
 type TestResult struct {
 	OutputFile string
 	Duration   time.Duration
+}
+
+// GetExecutionMode determines the execution mode based on config flags
+func (c TestConfig) GetExecutionMode() ExecutionMode {
+	if c.Queue > 0 {
+		return Queue
+	} else if c.Parallel {
+		return Parallel
+	}
+	return Sequential
 }
 
 var logMutex sync.Mutex
@@ -32,9 +51,15 @@ func RunReliabilityTest(config TestConfig) (*TestResult, error) {
 	timestamp := time.Now().Unix()
 	outputFile := fmt.Sprintf("%s_%d.log", config.Filename, timestamp)
 
-	mode := "sequential"
-	if config.Parallel {
+	execMode := config.GetExecutionMode()
+	var mode string
+	switch execMode {
+	case Queue:
+		mode = fmt.Sprintf("queue (workers: %d)", config.Queue)
+	case Parallel:
 		mode = "parallel"
+	default:
+		mode = "sequential"
 	}
 	fmt.Printf("Running %d loop(s) with agent: %s (%s mode)\n", config.Loops, config.AgentName, mode)
 	fmt.Printf("Output file: %s\n", outputFile)
@@ -46,23 +71,84 @@ func RunReliabilityTest(config TestConfig) (*TestResult, error) {
 }
 
 
-// runLoops executes loops either sequentially or in parallel based on config
+// runLoops executes loops based on the configured execution mode
 func runLoops(config TestConfig, outputFile string, startTime time.Time) (*TestResult, error) {
+	execMode := config.GetExecutionMode()
+	
+	switch execMode {
+	case Queue:
+		return runLoopsQueue(config, outputFile, startTime)
+	case Parallel:
+		return runLoopsParallel(config, outputFile, startTime)
+	default:
+		return runLoopsSequential(config, outputFile, startTime)
+	}
+}
+
+// runLoopsQueue executes loops using a worker queue system
+func runLoopsQueue(config TestConfig, outputFile string, startTime time.Time) (*TestResult, error) {
+	totalLoops := config.Loops
+	workerCount := config.Queue
+	
+	fmt.Printf("\n=== Starting %d loops with %d workers ===\n", totalLoops, workerCount)
+	
+	// Create channels
+	workQueue := make(chan int, totalLoops)
+	errorChan := make(chan error, totalLoops)
+	
+	// Load the queue with all loop numbers
+	for i := 1; i <= totalLoops; i++ {
+		workQueue <- i
+	}
+	close(workQueue) // No more work will be added
+	
+	// Start worker goroutines
+	var wg sync.WaitGroup
+	for w := 1; w <= workerCount; w++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			fmt.Printf("Worker %d started\n", workerID)
+			
+			for loopNum := range workQueue {
+				fmt.Printf("Worker %d processing loop %d\n", workerID, loopNum)
+				if err := executeLoop(loopNum, config, outputFile); err != nil {
+					errorChan <- fmt.Errorf("worker %d, loop %d: %v", workerID, loopNum, err)
+				}
+				fmt.Printf("Worker %d completed loop %d\n", workerID, loopNum)
+			}
+			
+			fmt.Printf("Worker %d finished\n", workerID)
+		}(w)
+	}
+	
+	// Wait for all workers to complete
+	wg.Wait()
+	close(errorChan)
+	
+	// Collect any errors
+	for err := range errorChan {
+		log.Printf("Execution error: %v", err)
+	}
+	
+	totalDuration := time.Since(startTime)
+	fmt.Printf("\n=== All %d loops completed with %d workers ===\n", totalLoops, workerCount)
+	
+	return &TestResult{
+		OutputFile: outputFile,
+		Duration:   totalDuration,
+	}, nil
+}
+
+// runLoopsParallel executes loops in parallel batches (existing implementation)
+func runLoopsParallel(config TestConfig, outputFile string, startTime time.Time) (*TestResult, error) {
 	batchSize := config.BatchSize
-	if config.Parallel {
-		if batchSize <= 0 {
-			batchSize = 5 // Default batch size for parallel
-		}
-	} else {
-		batchSize = 1 // Sequential execution: batch size of 1
+	if batchSize <= 0 {
+		batchSize = 5 // Default batch size for parallel
 	}
 
 	totalLoops := config.Loops
-	if config.Parallel {
-		fmt.Printf("\n=== Starting %d loops in batches of %d ===\n", totalLoops, batchSize)
-	} else {
-		fmt.Printf("\n=== Starting %d loops sequentially ===\n", totalLoops)
-	}
+	fmt.Printf("\n=== Starting %d loops in batches of %d ===\n", totalLoops, batchSize)
 
 	errorChan := make(chan error, totalLoops)
 	loopIndex := 1
@@ -74,9 +160,7 @@ func runLoops(config TestConfig, outputFile string, startTime time.Time) (*TestR
 			currentBatchSize = totalLoops - loopIndex + 1
 		}
 
-		if config.Parallel {
-			fmt.Printf("\n--- Starting batch: loops %d-%d ---\n", loopIndex, loopIndex+currentBatchSize-1)
-		}
+		fmt.Printf("\n--- Starting batch: loops %d-%d ---\n", loopIndex, loopIndex+currentBatchSize-1)
 
 		var wg sync.WaitGroup
 
@@ -95,13 +179,7 @@ func runLoops(config TestConfig, outputFile string, startTime time.Time) (*TestR
 		// Wait for current batch to complete
 		wg.Wait()
 		
-		if config.Parallel {
-			fmt.Printf("--- Batch completed: loops %d-%d ---\n", loopIndex, loopIndex+currentBatchSize-1)
-		} else if loopIndex < totalLoops {
-			// Add delay between sequential loops (except after the last one)
-			fmt.Printf("Waiting before next iteration...\n")
-			time.Sleep(1 * time.Second)
-		}
+		fmt.Printf("--- Batch completed: loops %d-%d ---\n", loopIndex, loopIndex+currentBatchSize-1)
 
 		// Move to next batch
 		loopIndex += currentBatchSize
@@ -115,11 +193,42 @@ func runLoops(config TestConfig, outputFile string, startTime time.Time) (*TestR
 	}
 
 	totalDuration := time.Since(startTime)
-	if config.Parallel {
-		fmt.Printf("\n=== All %d loops completed in batches ===\n", totalLoops)
-	} else {
-		fmt.Printf("\n=== All %d loops completed ===\n", totalLoops)
+	fmt.Printf("\n=== All %d loops completed in batches ===\n", totalLoops)
+
+	return &TestResult{
+		OutputFile: outputFile,
+		Duration:   totalDuration,
+	}, nil
+}
+
+// runLoopsSequential executes loops one after another (existing implementation)
+func runLoopsSequential(config TestConfig, outputFile string, startTime time.Time) (*TestResult, error) {
+	totalLoops := config.Loops
+	fmt.Printf("\n=== Starting %d loops sequentially ===\n", totalLoops)
+
+	errorChan := make(chan error, totalLoops)
+
+	for loopNum := 1; loopNum <= totalLoops; loopNum++ {
+		if err := executeLoop(loopNum, config, outputFile); err != nil {
+			errorChan <- fmt.Errorf("loop %d: %v", loopNum, err)
+		}
+		
+		if loopNum < totalLoops {
+			// Add delay between sequential loops (except after the last one)
+			fmt.Printf("Waiting before next iteration...\n")
+			time.Sleep(1 * time.Second)
+		}
 	}
+
+	close(errorChan)
+
+	// Collect any errors
+	for err := range errorChan {
+		log.Printf("Execution error: %v", err)
+	}
+
+	totalDuration := time.Since(startTime)
+	fmt.Printf("\n=== All %d loops completed ===\n", totalLoops)
 
 	return &TestResult{
 		OutputFile: outputFile,
