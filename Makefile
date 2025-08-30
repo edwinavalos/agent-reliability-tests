@@ -23,7 +23,7 @@ test-parallel:
 
 exec:
 	@echo "Running exec reliability test..."
-	go run cmd/reliability/main.go general-purpose --loops 30 --parallel
+	go run cmd/reliability/main.go general-purpose --loops 30 --parallel --batch 5
 
 # Analyze most recent log file  
 analyze:

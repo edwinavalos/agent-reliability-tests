@@ -41,46 +41,28 @@ func RunReliabilityTest(config TestConfig) (*TestResult, error) {
 
 	startTime := time.Now()
 
-	if config.Parallel {
-		return runParallelLoops(config, outputFile, startTime)
-	}
-	return runSequentialLoops(config, outputFile, startTime)
+	// Use unified execution method for both serial and parallel
+	return runLoops(config, outputFile, startTime)
 }
 
-// runSequentialLoops executes loops one after another
-func runSequentialLoops(config TestConfig, outputFile string, startTime time.Time) (*TestResult, error) {
 
-	for i := 1; i <= config.Loops; i++ {
-		fmt.Printf("\n=== Loop %d/%d ===\n", i, config.Loops)
-
-		if err := executeSingleLoop(i, config, outputFile); err != nil {
-			log.Printf("Error in loop %d: %v", i, err)
-		}
-
-		if i < config.Loops {
-			fmt.Printf("Waiting before next iteration...\n")
-			time.Sleep(1 * time.Second)
-		}
-	}
-
-	totalDuration := time.Since(startTime)
-	fmt.Printf("\n=== All %d loops completed ===\n", config.Loops)
-
-	return &TestResult{
-		OutputFile: outputFile,
-		Duration:   totalDuration,
-	}, nil
-}
-
-// runParallelLoops executes loops in batches to control concurrency
-func runParallelLoops(config TestConfig, outputFile string, startTime time.Time) (*TestResult, error) {
+// runLoops executes loops either sequentially or in parallel based on config
+func runLoops(config TestConfig, outputFile string, startTime time.Time) (*TestResult, error) {
 	batchSize := config.BatchSize
-	if batchSize <= 0 {
-		batchSize = 5 // Default batch size
+	if config.Parallel {
+		if batchSize <= 0 {
+			batchSize = 5 // Default batch size for parallel
+		}
+	} else {
+		batchSize = 1 // Sequential execution: batch size of 1
 	}
 
 	totalLoops := config.Loops
-	fmt.Printf("\n=== Starting %d loops in batches of %d ===\n", totalLoops, batchSize)
+	if config.Parallel {
+		fmt.Printf("\n=== Starting %d loops in batches of %d ===\n", totalLoops, batchSize)
+	} else {
+		fmt.Printf("\n=== Starting %d loops sequentially ===\n", totalLoops)
+	}
 
 	errorChan := make(chan error, totalLoops)
 	loopIndex := 1
@@ -92,7 +74,9 @@ func runParallelLoops(config TestConfig, outputFile string, startTime time.Time)
 			currentBatchSize = totalLoops - loopIndex + 1
 		}
 
-		fmt.Printf("\n--- Starting batch: loops %d-%d ---\n", loopIndex, loopIndex+currentBatchSize-1)
+		if config.Parallel {
+			fmt.Printf("\n--- Starting batch: loops %d-%d ---\n", loopIndex, loopIndex+currentBatchSize-1)
+		}
 
 		var wg sync.WaitGroup
 
@@ -102,7 +86,7 @@ func runParallelLoops(config TestConfig, outputFile string, startTime time.Time)
 			wg.Add(1)
 			go func(loopNum int) {
 				defer wg.Done()
-				if err := executeSingleLoop(loopNum, config, outputFile); err != nil {
+				if err := executeLoop(loopNum, config, outputFile); err != nil {
 					errorChan <- fmt.Errorf("loop %d: %v", loopNum, err)
 				}
 			}(currentLoop)
@@ -110,7 +94,14 @@ func runParallelLoops(config TestConfig, outputFile string, startTime time.Time)
 
 		// Wait for current batch to complete
 		wg.Wait()
-		fmt.Printf("--- Batch completed: loops %d-%d ---\n", loopIndex, loopIndex+currentBatchSize-1)
+		
+		if config.Parallel {
+			fmt.Printf("--- Batch completed: loops %d-%d ---\n", loopIndex, loopIndex+currentBatchSize-1)
+		} else if loopIndex < totalLoops {
+			// Add delay between sequential loops (except after the last one)
+			fmt.Printf("Waiting before next iteration...\n")
+			time.Sleep(1 * time.Second)
+		}
 
 		// Move to next batch
 		loopIndex += currentBatchSize
@@ -120,11 +111,15 @@ func runParallelLoops(config TestConfig, outputFile string, startTime time.Time)
 
 	// Collect any errors
 	for err := range errorChan {
-		log.Printf("Parallel execution error: %v", err)
+		log.Printf("Execution error: %v", err)
 	}
 
 	totalDuration := time.Since(startTime)
-	fmt.Printf("\n=== All %d loops completed in batches ===\n", totalLoops)
+	if config.Parallel {
+		fmt.Printf("\n=== All %d loops completed in batches ===\n", totalLoops)
+	} else {
+		fmt.Printf("\n=== All %d loops completed ===\n", totalLoops)
+	}
 
 	return &TestResult{
 		OutputFile: outputFile,
@@ -132,8 +127,8 @@ func runParallelLoops(config TestConfig, outputFile string, startTime time.Time)
 	}, nil
 }
 
-// executeSingleLoop runs a single test loop
-func executeSingleLoop(loopNum int, config TestConfig, outputFile string) error {
+// executeLoop runs a single test loop
+func executeLoop(loopNum int, config TestConfig, outputFile string) error {
 	// Create the prompt using the specified pattern
 	prompt := fmt.Sprintf("use the %s agent and ask it to say 'hello', return what you told the agent, and just its response to you asking it to say 'hello'", config.AgentName)
 
