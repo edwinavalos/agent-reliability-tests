@@ -21,13 +21,14 @@ const (
 )
 
 type TestConfig struct {
-	AgentName      string
-	Loops          int
-	Filename       string
-	Parallel       bool
-	BatchSize      int
-	Queue          int
-	PromptTemplate string
+	AgentName        string
+	Loops            int
+	Filename         string
+	Parallel         bool
+	BatchSize        int
+	Queue            int
+	PromptTemplate   string
+	ParsedTemplate   *template.Template // Cached parsed template
 }
 
 type TestResult struct {
@@ -49,6 +50,12 @@ func (c TestConfig) GetExecutionMode() ExecutionMode {
 
 var logMutex sync.Mutex
 
+// Template file extension constants
+const (
+	TemplateExtTmpl     = ".tmpl"
+	TemplateExtTemplate = ".template"
+)
+
 // validateAndLoadTemplate validates the template file path and loads the template
 func validateAndLoadTemplate(templatePath string) (*template.Template, error) {
 	if templatePath == "" {
@@ -62,8 +69,8 @@ func validateAndLoadTemplate(templatePath string) (*template.Template, error) {
 	
 	// Validate file extension
 	ext := filepath.Ext(templatePath)
-	if ext != ".tmpl" && ext != ".template" {
-		return nil, fmt.Errorf("template file must have .tmpl or .template extension, got: %s", ext)
+	if ext != TemplateExtTmpl && ext != TemplateExtTemplate {
+		return nil, fmt.Errorf("template file must have %s or %s extension, got: %s", TemplateExtTmpl, TemplateExtTemplate, ext)
 	}
 	
 	// Load and parse template
@@ -77,6 +84,15 @@ func validateAndLoadTemplate(templatePath string) (*template.Template, error) {
 
 // RunReliabilityTest executes the reliability test with the given configuration
 func RunReliabilityTest(config TestConfig) (*TestResult, error) {
+	// Validate and parse template once at the start
+	if config.PromptTemplate != "" {
+		parsedTemplate, err := validateAndLoadTemplate(config.PromptTemplate)
+		if err != nil {
+			return nil, fmt.Errorf("template validation failed: %v", err)
+		}
+		config.ParsedTemplate = parsedTemplate
+	}
+	
 	// Generate timestamped filename
 	timestamp := time.Now().Unix()
 	outputFile := fmt.Sprintf("%s_%d.log", config.Filename, timestamp)
@@ -246,22 +262,16 @@ func runLoopsParallel(config TestConfig, outputFile string, startTime time.Time)
 
 // executeLoop runs a single test loop
 func executeLoop(loopNum int, config TestConfig, outputFile string) error {
-	// Create the prompt using either the provided template file or the default pattern
+	// Create the prompt using either the cached parsed template or the default pattern
 	var prompt string
-	if config.PromptTemplate != "" {
-		// Load and validate template
-		tmpl, err := validateAndLoadTemplate(config.PromptTemplate)
-		if err != nil {
-			return fmt.Errorf("template validation failed: %v", err)
-		}
-		
-		// Render template with data
+	if config.ParsedTemplate != nil {
+		// Render cached template with data
 		templateData := TemplateData{
 			SubAgentName: config.AgentName,
 		}
 		
 		var buf bytes.Buffer
-		if err := tmpl.Execute(&buf, templateData); err != nil {
+		if err := config.ParsedTemplate.Execute(&buf, templateData); err != nil {
 			return fmt.Errorf("failed to execute template: %v", err)
 		}
 		prompt = strings.TrimSpace(buf.String())
