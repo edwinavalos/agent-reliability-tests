@@ -68,8 +68,8 @@ The tool supports three execution modes:
 The tool includes a flexible file-based Go template system for customizing agent prompts.
 
 ### Template Variables
-- `{{.SubAgentName}}` - The name of the agent being tested
 
+> **Note:** Currently, `SubAgentName` is the only available template variable.
 ### Example Templates
 
 Located in `example_prompt_templates/`:
