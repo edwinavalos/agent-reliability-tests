@@ -32,7 +32,7 @@ func main() {
 	rootCmd.Flags().BoolVarP(&parallel, "parallel", "p", false, "Run tests in parallel batches (default: false, uses queue mode)")
 	rootCmd.Flags().IntVar(&batchSize, "batch", 5, "Number of parallel executions to run at once (default: 5, only used with --parallel)")
 	rootCmd.Flags().IntVarP(&queue, "queue", "q", 0, "Number of worker threads for queue mode (default: 1, mutually exclusive with --parallel)")
-	rootCmd.Flags().StringVar(&promptTemplate, "prompt", "", "Prompt template with %s placeholder for agent name (if not provided, uses default prompt)")
+	rootCmd.Flags().StringVar(&promptTemplate, "prompt", "", "Path to Go template file for custom prompts (if not provided, uses default prompt)")
 
 	// Make --parallel and --queue mutually exclusive
 	rootCmd.MarkFlagsMutuallyExclusive("parallel", "queue")

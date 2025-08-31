@@ -6,8 +6,10 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
+	"text/template"
 	"time"
 )
 
@@ -33,6 +35,10 @@ type TestResult struct {
 	Duration   time.Duration
 }
 
+type TemplateData struct {
+	SubAgentName string
+}
+
 // GetExecutionMode determines the execution mode based on config flags
 func (c TestConfig) GetExecutionMode() ExecutionMode {
 	if c.Parallel {
@@ -42,6 +48,32 @@ func (c TestConfig) GetExecutionMode() ExecutionMode {
 }
 
 var logMutex sync.Mutex
+
+// validateAndLoadTemplate validates the template file path and loads the template
+func validateAndLoadTemplate(templatePath string) (*template.Template, error) {
+	if templatePath == "" {
+		return nil, nil // Use default template
+	}
+	
+	// Check if file exists
+	if _, err := os.Stat(templatePath); os.IsNotExist(err) {
+		return nil, fmt.Errorf("template file does not exist: %s", templatePath)
+	}
+	
+	// Validate file extension
+	ext := filepath.Ext(templatePath)
+	if ext != ".tmpl" && ext != ".template" {
+		return nil, fmt.Errorf("template file must have .tmpl or .template extension, got: %s", ext)
+	}
+	
+	// Load and parse template
+	tmpl, err := template.ParseFiles(templatePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse template file %s: %v", templatePath, err)
+	}
+	
+	return tmpl, nil
+}
 
 // RunReliabilityTest executes the reliability test with the given configuration
 func RunReliabilityTest(config TestConfig) (*TestResult, error) {
@@ -214,11 +246,27 @@ func runLoopsParallel(config TestConfig, outputFile string, startTime time.Time)
 
 // executeLoop runs a single test loop
 func executeLoop(loopNum int, config TestConfig, outputFile string) error {
-	// Create the prompt using either the provided template or the default pattern
+	// Create the prompt using either the provided template file or the default pattern
 	var prompt string
 	if config.PromptTemplate != "" {
-		prompt = fmt.Sprintf(config.PromptTemplate, config.AgentName)
+		// Load and validate template
+		tmpl, err := validateAndLoadTemplate(config.PromptTemplate)
+		if err != nil {
+			return fmt.Errorf("template validation failed: %v", err)
+		}
+		
+		// Render template with data
+		templateData := TemplateData{
+			SubAgentName: config.AgentName,
+		}
+		
+		var buf bytes.Buffer
+		if err := tmpl.Execute(&buf, templateData); err != nil {
+			return fmt.Errorf("failed to execute template: %v", err)
+		}
+		prompt = strings.TrimSpace(buf.String())
 	} else {
+		// Use default prompt
 		prompt = fmt.Sprintf("use the %s agent and ask it to say 'hello', return what you told the agent, and just its response to you asking it to say 'hello'", config.AgentName)
 	}
 
