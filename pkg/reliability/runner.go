@@ -14,18 +14,18 @@ import (
 type ExecutionMode int
 
 const (
-	Sequential ExecutionMode = iota
-	Parallel
+	Parallel ExecutionMode = iota
 	Queue
 )
 
 type TestConfig struct {
-	AgentName string
-	Loops     int
-	Filename  string
-	Parallel  bool
-	BatchSize int
-	Queue     int
+	AgentName      string
+	Loops          int
+	Filename       string
+	Parallel       bool
+	BatchSize      int
+	Queue          int
+	PromptTemplate string
 }
 
 type TestResult struct {
@@ -35,12 +35,10 @@ type TestResult struct {
 
 // GetExecutionMode determines the execution mode based on config flags
 func (c TestConfig) GetExecutionMode() ExecutionMode {
-	if c.Queue > 0 {
-		return Queue
-	} else if c.Parallel {
+	if c.Parallel {
 		return Parallel
 	}
-	return Sequential
+	return Queue
 }
 
 var logMutex sync.Mutex
@@ -53,13 +51,21 @@ func RunReliabilityTest(config TestConfig) (*TestResult, error) {
 
 	execMode := config.GetExecutionMode()
 	var mode string
+	var workerCount int
 	switch execMode {
 	case Queue:
-		mode = fmt.Sprintf("queue (workers: %d)", config.Queue)
+		if config.Queue > 0 {
+			workerCount = config.Queue
+		} else {
+			workerCount = 1 // Default mode uses 1 worker
+		}
+		if workerCount == 1 {
+			mode = "queue (1 worker)"
+		} else {
+			mode = fmt.Sprintf("queue (%d workers)", workerCount)
+		}
 	case Parallel:
 		mode = "parallel"
-	default:
-		mode = "sequential"
 	}
 	fmt.Printf("Running %d loop(s) with agent: %s (%s mode)\n", config.Loops, config.AgentName, mode)
 	fmt.Printf("Output file: %s\n", outputFile)
@@ -70,38 +76,42 @@ func RunReliabilityTest(config TestConfig) (*TestResult, error) {
 	return runLoops(config, outputFile, startTime)
 }
 
-
 // runLoops executes loops based on the configured execution mode
 func runLoops(config TestConfig, outputFile string, startTime time.Time) (*TestResult, error) {
 	execMode := config.GetExecutionMode()
-	
+
 	switch execMode {
 	case Queue:
-		return runLoopsQueue(config, outputFile, startTime)
+		// Default queue mode: use specified queue size or 1 worker if not specified
+		workerCount := config.Queue
+		if workerCount == 0 {
+			workerCount = 1
+		}
+		return runLoopsQueue(config, outputFile, startTime, workerCount)
 	case Parallel:
 		return runLoopsParallel(config, outputFile, startTime)
-	default:
-		return runLoopsSequential(config, outputFile, startTime)
 	}
+	
+	// This should never be reached, but added for safety
+	return nil, fmt.Errorf("unknown execution mode")
 }
 
 // runLoopsQueue executes loops using a worker queue system
-func runLoopsQueue(config TestConfig, outputFile string, startTime time.Time) (*TestResult, error) {
+func runLoopsQueue(config TestConfig, outputFile string, startTime time.Time, workerCount int) (*TestResult, error) {
 	totalLoops := config.Loops
-	workerCount := config.Queue
-	
+
 	fmt.Printf("\n=== Starting %d loops with %d workers ===\n", totalLoops, workerCount)
-	
+
 	// Create channels
 	workQueue := make(chan int, totalLoops)
 	errorChan := make(chan error, totalLoops)
-	
+
 	// Load the queue with all loop numbers
 	for i := 1; i <= totalLoops; i++ {
 		workQueue <- i
 	}
 	close(workQueue) // No more work will be added
-	
+
 	// Start worker goroutines
 	var wg sync.WaitGroup
 	for w := 1; w <= workerCount; w++ {
@@ -109,7 +119,7 @@ func runLoopsQueue(config TestConfig, outputFile string, startTime time.Time) (*
 		go func(workerID int) {
 			defer wg.Done()
 			fmt.Printf("Worker %d started\n", workerID)
-			
+
 			for loopNum := range workQueue {
 				fmt.Printf("Worker %d processing loop %d\n", workerID, loopNum)
 				if err := executeLoop(loopNum, config, outputFile); err != nil {
@@ -117,23 +127,23 @@ func runLoopsQueue(config TestConfig, outputFile string, startTime time.Time) (*
 				}
 				fmt.Printf("Worker %d completed loop %d\n", workerID, loopNum)
 			}
-			
+
 			fmt.Printf("Worker %d finished\n", workerID)
 		}(w)
 	}
-	
+
 	// Wait for all workers to complete
 	wg.Wait()
 	close(errorChan)
-	
+
 	// Collect any errors
 	for err := range errorChan {
 		log.Printf("Execution error: %v", err)
 	}
-	
+
 	totalDuration := time.Since(startTime)
 	fmt.Printf("\n=== All %d loops completed with %d workers ===\n", totalLoops, workerCount)
-	
+
 	return &TestResult{
 		OutputFile: outputFile,
 		Duration:   totalDuration,
@@ -178,7 +188,7 @@ func runLoopsParallel(config TestConfig, outputFile string, startTime time.Time)
 
 		// Wait for current batch to complete
 		wg.Wait()
-		
+
 		fmt.Printf("--- Batch completed: loops %d-%d ---\n", loopIndex, loopIndex+currentBatchSize-1)
 
 		// Move to next batch
@@ -201,45 +211,16 @@ func runLoopsParallel(config TestConfig, outputFile string, startTime time.Time)
 	}, nil
 }
 
-// runLoopsSequential executes loops one after another (existing implementation)
-func runLoopsSequential(config TestConfig, outputFile string, startTime time.Time) (*TestResult, error) {
-	totalLoops := config.Loops
-	fmt.Printf("\n=== Starting %d loops sequentially ===\n", totalLoops)
-
-	errorChan := make(chan error, totalLoops)
-
-	for loopNum := 1; loopNum <= totalLoops; loopNum++ {
-		if err := executeLoop(loopNum, config, outputFile); err != nil {
-			errorChan <- fmt.Errorf("loop %d: %v", loopNum, err)
-		}
-		
-		if loopNum < totalLoops {
-			// Add delay between sequential loops (except after the last one)
-			fmt.Printf("Waiting before next iteration...\n")
-			time.Sleep(1 * time.Second)
-		}
-	}
-
-	close(errorChan)
-
-	// Collect any errors
-	for err := range errorChan {
-		log.Printf("Execution error: %v", err)
-	}
-
-	totalDuration := time.Since(startTime)
-	fmt.Printf("\n=== All %d loops completed ===\n", totalLoops)
-
-	return &TestResult{
-		OutputFile: outputFile,
-		Duration:   totalDuration,
-	}, nil
-}
 
 // executeLoop runs a single test loop
 func executeLoop(loopNum int, config TestConfig, outputFile string) error {
-	// Create the prompt using the specified pattern
-	prompt := fmt.Sprintf("use the %s agent and ask it to say 'hello', return what you told the agent, and just its response to you asking it to say 'hello'", config.AgentName)
+	// Create the prompt using either the provided template or the default pattern
+	var prompt string
+	if config.PromptTemplate != "" {
+		prompt = fmt.Sprintf(config.PromptTemplate, config.AgentName)
+	} else {
+		prompt = fmt.Sprintf("use the %s agent and ask it to say 'hello', return what you told the agent, and just its response to you asking it to say 'hello'", config.AgentName)
+	}
 
 	fmt.Printf("Loop %d: Executing claude with agent: %s\n", loopNum, config.AgentName)
 	fmt.Printf("Loop %d: Prompt: %s\n\n", loopNum, prompt)
