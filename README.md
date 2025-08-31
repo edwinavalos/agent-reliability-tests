@@ -22,7 +22,7 @@ Run a basic reliability test:
 
 Analyze the results:
 ```bash
-make analyze
+./build/analyze chat_*.log --verbose
 ```
 
 ## 🛠️ Reliability Test Runner
@@ -123,16 +123,20 @@ Analyzes test logs to quantify response similarity, identify patterns, and detec
 - `--output, -o` - Save results to file
 - `--debug, -d` - Show extracted responses for debugging
 
-## 🎯 Makefile Targets
+## 🎯 Quick Testing with Makefile
+
+For convenience, several Makefile targets are available for quick testing:
 
 - `make build` - Build binaries into `./build/` directory
-- `make test` - Run basic reliability test (general-purpose, 5 loops)
-- `make test-parallel` - Run parallel reliability test
-- `make exec` - Run multi-worker queue test (30 loops, 5 workers)
-- `make analyze` - Analyze the most recent log file
+- `make test` - Quick test: `./build/agent-reliability-tests general-purpose --loops 5`
+- `make test-parallel` - Quick parallel test with default settings
+- `make exec` - Quick queue test: `./build/agent-reliability-tests general-purpose --loops 30 --queue 5`
+- `make analyze` - Analyze the most recent log file automatically
 - `make clean` - Remove log files and build directory
 - `make deps` - Install Go dependencies
 - `make help` - Show available targets
+
+**Note:** For production use and custom configurations, use the binaries directly as shown in the examples above.
 
 ## 🏗️ Architecture
 
@@ -171,7 +175,12 @@ Build tools:
 make build
 ```
 
-Run tests:
+Run a quick test:
+```bash
+./build/agent-reliability-tests general-purpose --loops 3
+```
+
+Or use the convenience target:
 ```bash
 make test
 ```
