@@ -10,10 +10,12 @@ import (
 )
 
 var (
-	loops     int
-	filename  string
-	parallel  bool
-	batchSize int
+	loops        int
+	filename     string
+	parallel     bool
+	batchSize    int
+	queue        int
+	promptTemplate string
 )
 
 func main() {
@@ -27,8 +29,13 @@ func main() {
 
 	rootCmd.Flags().IntVarP(&loops, "loops", "l", 1, "Number of times to run the test (default: 1)")
 	rootCmd.Flags().StringVarP(&filename, "filename", "f", "chat", "Base name for output file (will be formatted as <name>_<unix_timestamp>.log)")
-	rootCmd.Flags().BoolVarP(&parallel, "parallel", "p", false, "Run tests in parallel (default: false)")
+	rootCmd.Flags().BoolVarP(&parallel, "parallel", "p", false, "Run tests in parallel batches (default: false, uses queue mode)")
 	rootCmd.Flags().IntVar(&batchSize, "batch", 5, "Number of parallel executions to run at once (default: 5, only used with --parallel)")
+	rootCmd.Flags().IntVarP(&queue, "queue", "q", 0, "Number of worker threads for queue mode (default: 1, mutually exclusive with --parallel)")
+	rootCmd.Flags().StringVar(&promptTemplate, "prompt", "", "Path to Go template file for custom prompts (if not provided, uses default prompt)")
+
+	// Make --parallel and --queue mutually exclusive
+	rootCmd.MarkFlagsMutuallyExclusive("parallel", "queue")
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)
@@ -38,11 +45,13 @@ func main() {
 
 func runTest(cmd *cobra.Command, args []string) {
 	config := reliability.TestConfig{
-		AgentName: args[0],
-		Loops:     loops,
-		Filename:  filename,
-		Parallel:  parallel,
-		BatchSize: batchSize,
+		AgentName:      args[0],
+		Loops:          loops,
+		Filename:       filename,
+		Parallel:       parallel,
+		BatchSize:      batchSize,
+		Queue:          queue,
+		PromptTemplate: promptTemplate,
 	}
 
 	result, err := reliability.RunReliabilityTest(config)

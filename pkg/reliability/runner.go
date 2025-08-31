@@ -6,17 +6,29 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
+	"text/template"
 	"time"
 )
 
+type ExecutionMode int
+
+const (
+	Parallel ExecutionMode = iota
+	Queue
+)
+
 type TestConfig struct {
-	AgentName string
-	Loops     int
-	Filename  string
-	Parallel  bool
-	BatchSize int
+	AgentName        string
+	Loops            int
+	Filename         string
+	Parallel         bool
+	BatchSize        int
+	Queue            int
+	PromptTemplate   string
+	ParsedTemplate   *template.Template // Cached parsed template
 }
 
 type TestResult struct {
@@ -24,16 +36,83 @@ type TestResult struct {
 	Duration   time.Duration
 }
 
+type TemplateData struct {
+	SubAgentName string
+}
+
+// GetExecutionMode determines the execution mode based on config flags
+func (c TestConfig) GetExecutionMode() ExecutionMode {
+	if c.Parallel {
+		return Parallel
+	}
+	return Queue
+}
+
 var logMutex sync.Mutex
+
+// Template file extension constants
+const (
+	TemplateExtTmpl     = ".tmpl"
+	TemplateExtTemplate = ".template"
+)
+
+// validateAndLoadTemplate validates the template file path and loads the template
+func validateAndLoadTemplate(templatePath string) (*template.Template, error) {
+	if templatePath == "" {
+		return nil, nil // Use default template
+	}
+	
+	// Check if file exists
+	if _, err := os.Stat(templatePath); os.IsNotExist(err) {
+		return nil, fmt.Errorf("template file does not exist: %s", templatePath)
+	}
+	
+	// Validate file extension
+	ext := filepath.Ext(templatePath)
+	if ext != TemplateExtTmpl && ext != TemplateExtTemplate {
+		return nil, fmt.Errorf("template file must have %s or %s extension, got: %s", TemplateExtTmpl, TemplateExtTemplate, ext)
+	}
+	
+	// Load and parse template
+	tmpl, err := template.ParseFiles(templatePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse template file %s: %v", templatePath, err)
+	}
+	
+	return tmpl, nil
+}
 
 // RunReliabilityTest executes the reliability test with the given configuration
 func RunReliabilityTest(config TestConfig) (*TestResult, error) {
+	// Validate and parse template once at the start
+	if config.PromptTemplate != "" {
+		parsedTemplate, err := validateAndLoadTemplate(config.PromptTemplate)
+		if err != nil {
+			return nil, fmt.Errorf("template validation failed: %v", err)
+		}
+		config.ParsedTemplate = parsedTemplate
+	}
+	
 	// Generate timestamped filename
 	timestamp := time.Now().Unix()
 	outputFile := fmt.Sprintf("%s_%d.log", config.Filename, timestamp)
 
-	mode := "sequential"
-	if config.Parallel {
+	execMode := config.GetExecutionMode()
+	var mode string
+	var workerCount int
+	switch execMode {
+	case Queue:
+		if config.Queue > 0 {
+			workerCount = config.Queue
+		} else {
+			workerCount = 1 // Default mode uses 1 worker
+		}
+		if workerCount == 1 {
+			mode = "queue (1 worker)"
+		} else {
+			mode = fmt.Sprintf("queue (%d workers)", workerCount)
+		}
+	case Parallel:
 		mode = "parallel"
 	}
 	fmt.Printf("Running %d loop(s) with agent: %s (%s mode)\n", config.Loops, config.AgentName, mode)
@@ -45,24 +124,89 @@ func RunReliabilityTest(config TestConfig) (*TestResult, error) {
 	return runLoops(config, outputFile, startTime)
 }
 
-
-// runLoops executes loops either sequentially or in parallel based on config
+// runLoops executes loops based on the configured execution mode
 func runLoops(config TestConfig, outputFile string, startTime time.Time) (*TestResult, error) {
-	batchSize := config.BatchSize
-	if config.Parallel {
-		if batchSize <= 0 {
-			batchSize = 5 // Default batch size for parallel
+	execMode := config.GetExecutionMode()
+
+	switch execMode {
+	case Queue:
+		// Default queue mode: use specified queue size or 1 worker if not specified
+		workerCount := config.Queue
+		if workerCount == 0 {
+			workerCount = 1
 		}
-	} else {
-		batchSize = 1 // Sequential execution: batch size of 1
+		return runLoopsQueue(config, outputFile, startTime, workerCount)
+	case Parallel:
+		return runLoopsParallel(config, outputFile, startTime)
+	}
+	
+	// This should never be reached, but added for safety
+	return nil, fmt.Errorf("unknown execution mode")
+}
+
+// runLoopsQueue executes loops using a worker queue system
+func runLoopsQueue(config TestConfig, outputFile string, startTime time.Time, workerCount int) (*TestResult, error) {
+	totalLoops := config.Loops
+
+	fmt.Printf("\n=== Starting %d loops with %d workers ===\n", totalLoops, workerCount)
+
+	// Create channels
+	workQueue := make(chan int, totalLoops)
+	errorChan := make(chan error, totalLoops)
+
+	// Load the queue with all loop numbers
+	for i := 1; i <= totalLoops; i++ {
+		workQueue <- i
+	}
+	close(workQueue) // No more work will be added
+
+	// Start worker goroutines
+	var wg sync.WaitGroup
+	for w := 1; w <= workerCount; w++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			fmt.Printf("Worker %d started\n", workerID)
+
+			for loopNum := range workQueue {
+				fmt.Printf("Worker %d processing loop %d\n", workerID, loopNum)
+				if err := executeLoop(loopNum, config, outputFile); err != nil {
+					errorChan <- fmt.Errorf("worker %d, loop %d: %v", workerID, loopNum, err)
+				}
+				fmt.Printf("Worker %d completed loop %d\n", workerID, loopNum)
+			}
+
+			fmt.Printf("Worker %d finished\n", workerID)
+		}(w)
+	}
+
+	// Wait for all workers to complete
+	wg.Wait()
+	close(errorChan)
+
+	// Collect any errors
+	for err := range errorChan {
+		log.Printf("Execution error: %v", err)
+	}
+
+	totalDuration := time.Since(startTime)
+	fmt.Printf("\n=== All %d loops completed with %d workers ===\n", totalLoops, workerCount)
+
+	return &TestResult{
+		OutputFile: outputFile,
+		Duration:   totalDuration,
+	}, nil
+}
+
+// runLoopsParallel executes loops in parallel batches (existing implementation)
+func runLoopsParallel(config TestConfig, outputFile string, startTime time.Time) (*TestResult, error) {
+	batchSize := config.BatchSize
+	if batchSize <= 0 {
+		batchSize = 5 // Default batch size for parallel
 	}
 
 	totalLoops := config.Loops
-	if config.Parallel {
-		fmt.Printf("\n=== Starting %d loops in batches of %d ===\n", totalLoops, batchSize)
-	} else {
-		fmt.Printf("\n=== Starting %d loops sequentially ===\n", totalLoops)
-	}
+	fmt.Printf("\n=== Starting %d loops in batches of %d ===\n", totalLoops, batchSize)
 
 	errorChan := make(chan error, totalLoops)
 	loopIndex := 1
@@ -74,9 +218,7 @@ func runLoops(config TestConfig, outputFile string, startTime time.Time) (*TestR
 			currentBatchSize = totalLoops - loopIndex + 1
 		}
 
-		if config.Parallel {
-			fmt.Printf("\n--- Starting batch: loops %d-%d ---\n", loopIndex, loopIndex+currentBatchSize-1)
-		}
+		fmt.Printf("\n--- Starting batch: loops %d-%d ---\n", loopIndex, loopIndex+currentBatchSize-1)
 
 		var wg sync.WaitGroup
 
@@ -94,14 +236,8 @@ func runLoops(config TestConfig, outputFile string, startTime time.Time) (*TestR
 
 		// Wait for current batch to complete
 		wg.Wait()
-		
-		if config.Parallel {
-			fmt.Printf("--- Batch completed: loops %d-%d ---\n", loopIndex, loopIndex+currentBatchSize-1)
-		} else if loopIndex < totalLoops {
-			// Add delay between sequential loops (except after the last one)
-			fmt.Printf("Waiting before next iteration...\n")
-			time.Sleep(1 * time.Second)
-		}
+
+		fmt.Printf("--- Batch completed: loops %d-%d ---\n", loopIndex, loopIndex+currentBatchSize-1)
 
 		// Move to next batch
 		loopIndex += currentBatchSize
@@ -115,11 +251,7 @@ func runLoops(config TestConfig, outputFile string, startTime time.Time) (*TestR
 	}
 
 	totalDuration := time.Since(startTime)
-	if config.Parallel {
-		fmt.Printf("\n=== All %d loops completed in batches ===\n", totalLoops)
-	} else {
-		fmt.Printf("\n=== All %d loops completed ===\n", totalLoops)
-	}
+	fmt.Printf("\n=== All %d loops completed in batches ===\n", totalLoops)
 
 	return &TestResult{
 		OutputFile: outputFile,
@@ -127,10 +259,26 @@ func runLoops(config TestConfig, outputFile string, startTime time.Time) (*TestR
 	}, nil
 }
 
+
 // executeLoop runs a single test loop
 func executeLoop(loopNum int, config TestConfig, outputFile string) error {
-	// Create the prompt using the specified pattern
-	prompt := fmt.Sprintf("use the %s agent and ask it to say 'hello', return what you told the agent, and just its response to you asking it to say 'hello'", config.AgentName)
+	// Create the prompt using either the cached parsed template or the default pattern
+	var prompt string
+	if config.ParsedTemplate != nil {
+		// Render cached template with data
+		templateData := TemplateData{
+			SubAgentName: config.AgentName,
+		}
+		
+		var buf bytes.Buffer
+		if err := config.ParsedTemplate.Execute(&buf, templateData); err != nil {
+			return fmt.Errorf("failed to execute template: %v", err)
+		}
+		prompt = strings.TrimSpace(buf.String())
+	} else {
+		// Use default prompt
+		prompt = fmt.Sprintf("use the %s agent and ask it to say 'hello', return what you told the agent, and just its response to you asking it to say 'hello'", config.AgentName)
+	}
 
 	fmt.Printf("Loop %d: Executing claude with agent: %s\n", loopNum, config.AgentName)
 	fmt.Printf("Loop %d: Prompt: %s\n\n", loopNum, prompt)
